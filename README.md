@@ -1,167 +1,155 @@
-# AI RAG System
+# RAG System
 
-A Retrieval-Augmented Generation (RAG) chatbot for a mathematics PDF using Gemini models, FAISS vector search, LangChain orchestration, and a Streamlit chat UI.
+This repository started as a notebook-first RAG prototype in `rag_notebook.ipynb`. The notebook loads `pdfs/mathematics.pdf`, chunks it, embeds it with Gemini, stores vectors in FAISS, retrieves the top matches, and answers with a constrained prompt. That same flow was then copied into a basic Streamlit app in `app.py`.
 
-![RAG Dashboard](images/dashboard.png)
-
-## System Overview
-
-This system answers user questions from a local PDF by combining semantic retrieval with a constrained LLM prompt.
-
-1. PDF ingestion
-
-- The PDF is loaded from `pdfs/mathematics.pdf`.
-
-2. Chunking
-
-- Text is split with `RecursiveCharacterTextSplitter`.
-- Current settings: `chunk_size=1000`, `chunk_overlap=150`.
-
-3. Embedding + indexing
-
-- Chunks are embedded with `models/gemini-embedding-001`.
-- Vectors are indexed and saved to `vectorstores/mathematics_faiss_gemini` using FAISS.
-
-4. Retrieval
-
-- For each question, the retriever returns top-k chunks (`k=4`).
-
-5. Answer generation
-
-- `gemini-2.5-flash` receives retrieved context plus the user question.
-- Prompt instructs the model to answer only from retrieved context.
-
-6. UI
-
-- Streamlit provides chat interaction and a button to create/refresh the vector store.
-
-## Key Features
-
-- Local PDF-to-chat workflow.
-- Persistent FAISS index for faster reuse.
-- Source-page display from retrieved chunks.
-- Streamlit interface with session message history.
-- Optional sidebar API key override.
-
-## Project Structure
+The project is now split into a production-leaning full-stack structure:
 
 ```text
 rag_chatbot/
-├─ app.py
-├─ rag_notebook.ipynb
-├─ requirements.txt
-├─ README.md
-├─ images/
-│  └─ dashboard.png
+├─ backend/
+│  ├─ app/
+│  │  ├─ api/routes/
+│  │  ├─ core/
+│  │  ├─ models/
+│  │  └─ services/
+│  ├─ data/
+│  ├─ .env.example
+│  └─ requirements.txt
+├─ frontend/
+│  ├─ app/
+│  ├─ components/
+│  ├─ lib/
+│  ├─ .env.example
+│  └─ package.json
 ├─ pdfs/
 │  └─ mathematics.pdf
-└─ vectorstores/
-   └─ mathematics_faiss_gemini/
+├─ vectorstores/
+│  └─ mathematics_faiss_gemini/
+├─ rag_notebook.ipynb
+├─ app.py
+└─ README.md
 ```
 
-## Tech Stack
+## What The Notebook Already Did
 
-- Python
-- Streamlit
-- LangChain
-- FAISS (`faiss-cpu`)
-- Google Gemini (`langchain-google-genai`)
-- PyPDF (`pypdf` / `PyPDFLoader`)
+`rag_notebook.ipynb` currently does these steps:
 
-## Prerequisites
+1. Loads the mathematics PDF with `PyPDFLoader`.
+2. Splits text with `RecursiveCharacterTextSplitter`.
+3. Builds a FAISS vector store using `models/gemini-embedding-001`.
+4. Retrieves the top matching chunks for a question.
+5. Sends retrieved context to `gemini-2.5-flash`.
+6. Returns an answer with a simple "only use the context" prompt.
+7. Writes the same logic into the Streamlit prototype in `app.py`.
 
-- Python 3.10+
-- A valid `GOOGLE_API_KEY`
+That notebook is a solid proof of concept, but it still mixes ingestion, retrieval, generation, and UI in one place.
 
-## Setup
+## New Architecture
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
+### Backend
 
-```bash
-pip install -r requirements.txt
-```
+The backend is a FastAPI service that owns the RAG logic:
 
-3. Create `.env` in the project root:
+- Validated request and response schemas with Pydantic.
+- PDF ingestion and chunk caching.
+- FAISS vector retrieval plus BM25 lexical retrieval.
+- Hybrid score fusion to reduce missed relevant chunks.
+- Strict JSON answer contract from the LLM.
+- Citation validation so only retrieved chunks can be cited.
+- Abstention logic when evidence is weak or the model output is malformed.
+
+Important files:
+
+- `backend/app/main.py`
+- `backend/app/api/routes/chat.py`
+- `backend/app/api/routes/ingest.py`
+- `backend/app/models/schemas.py`
+- `backend/app/services/indexing.py`
+- `backend/app/services/retrieval.py`
+- `backend/app/services/rag.py`
+
+### Frontend
+
+The frontend is a minimal Next.js app focused on usability:
+
+- Clean single-page chat experience.
+- Status panel for API and index health.
+- Citation cards for every grounded answer.
+- Rebuild-index action.
+- A deliberately minimal visual language so the model output stays central.
+
+Important files:
+
+- `frontend/app/page.tsx`
+- `frontend/components/chat-shell.tsx`
+- `frontend/lib/api.ts`
+- `frontend/app/globals.css`
+
+## Hallucination Reduction Strategy
+
+This version is designed to reduce hallucination much more aggressively than the notebook prototype:
+
+- Retrieval is hybrid, not dense-only.
+- Temperature is fixed at `0`.
+- The prompt forbids outside knowledge.
+- The model must return structured JSON.
+- The backend validates the model output.
+- The backend rejects answers without valid citations.
+- Low-confidence retrieval triggers an abstain response instead of a guessed answer.
+- Chunk cache persistence helps debug retrieval quality over time.
+
+## Backend Setup
+
+Create `backend/.env` from `backend/.env.example`:
 
 ```env
-GOOGLE_API_KEY=your_api_key_here
+GOOGLE_API_KEY=your_google_api_key
 ```
 
-## Run
-
-Start the Streamlit app:
+Install dependencies:
 
 ```bash
-streamlit run app.py
+pip install -r backend/requirements.txt
 ```
 
-Open the local URL shown in terminal (usually `http://localhost:8501`).
+Run the API from the `backend/` folder:
 
-## Configuration
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
 
-You can tune behavior in `app.py`:
+Useful endpoints:
 
-- `EMBEDDING_MODEL = "models/gemini-embedding-001"`
-- `CHAT_MODEL = "gemini-2.5-flash"`
-- `CHUNK_SIZE = 1000`
-- `CHUNK_OVERLAP = 150`
-- Retriever `k` in `search_kwargs={"k": 4}`
+- `GET /health`
+- `POST /api/v1/chat/query`
+- `GET /api/v1/ingest/status`
+- `POST /api/v1/ingest/rebuild`
 
-## Known Limitations
+## Frontend Setup
 
-- Retrieval is dense-only (no hybrid keyword retrieval yet).
-- Chunking is fixed-size oriented, not true semantic chunking.
-- No automated RAG evaluation harness yet.
-- Basic observability and cost controls.
+Create `frontend/.env.local` from `frontend/.env.example`:
 
-## Improvement Dashboard
+```env
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
 
-| Area              | Current State                 | Target State                               | Priority | Status  |
-| ----------------- | ----------------------------- | ------------------------------------------ | -------- | ------- |
-| Retrieval Quality | Top-k dense retrieval (`k=4`) | Hybrid retrieval + reranking               | High     | Planned |
-| Chunking Strategy | Fixed-size chunking           | Semantic / hierarchical chunking           | High     | Planned |
-| Evaluation        | Manual checks                 | Automated RAG evaluation                   | High     | Planned |
-| Prompting         | Single static template        | Prompt variants + guardrails               | Medium   | Planned |
-| Observability     | Minimal app logs              | Latency and retrieval-quality metrics      | Medium   | Planned |
-| UX                | Basic chat flow               | Better citations and filtering controls    | Medium   | Planned |
-| Security          | Env/sidebar key entry         | Managed secrets + safer deployment pattern | High     | Planned |
+Then install and run:
 
-## Improvement Plan (Practical)
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-### Phase 1: Quality Baseline
+## Suggested Next Improvements
 
-- Create a small benchmark dataset (`question`, `expected answer`, `source page`).
-- Track baseline metrics: grounded-answer rate, citation accuracy, latency.
-- Tune `k`, `chunk_size`, and `chunk_overlap` with A/B runs.
+- Add a small evaluation dataset for regression testing.
+- Add reranking after hybrid retrieval.
+- Add streaming responses for the frontend.
+- Add observability around retrieval score distributions and abstain rates.
+- Add unit tests for parser fallback, citation enforcement, and rebuild flow.
 
-### Phase 2: Retrieval Upgrades
+## Legacy Prototype
 
-- Add MMR or reranking to reduce duplicate and noisy chunks.
-- Add metadata-aware retrieval (sections/pages/topics).
-- Evaluate hybrid retrieval (dense + BM25).
-
-### Phase 3: Reliability and Ops
-
-- Add structured logs and request tracing.
-- Add retries/timeouts for model and embedding calls.
-- Add regression checks in CI for retrieval and answer quality.
-
-## Success Criteria
-
-- Grounded-answer rate >= 90% on evaluation set.
-- Citation accuracy >= 95%.
-- Median response latency <= 3 seconds for common questions.
-- Hallucination reports trend downward over time.
-
-## Troubleshooting
-
-- `GOOGLE_API_KEY` missing:
-  - Set key in `.env` or enter in Streamlit sidebar.
-
-- PDF not found:
-  - Ensure file exists at `pdfs/mathematics.pdf`.
-
-- Empty or weak answers:
-  - Rebuild vector store and increase retriever `k`.
-  - Revisit chunk settings.
+`rag_notebook.ipynb` and `app.py` are still useful as the original prototype and reference implementation. The new `backend/` and `frontend/` folders are the recommended path forward.
